@@ -1,0 +1,397 @@
+---
+title: "Estudio Modelo Redes Neuronales"
+author: "Juan Moscardó Durá"
+date: "2024-12-29"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Cargar paquetes
+library(neuralnet)
+library(caret)
+library(dplyr)
+library(ggplot2)
+```
+```{r}
+# setwd("C:/Users/jmosc/OneDrive/Documents")
+# Leer el archivo CSV
+datos <- read.csv("datos_sinteticos.csv")
+
+# Añadir la columna 'numerousuario'
+datos <- datos %>% mutate(numerousuario = row_number())
+
+# Reorganizar las columnas para que 'numerousuario' esté primero
+datos <- datos %>% select(numerousuario, everything())
+
+# Normalizar los datos para que estén entre 0 y 1 (importante para redes neuronales)
+# Excepto 'numerousuario' y 'CESD' que los dejaremos como están de momento
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+datos_norm <- datos %>%
+  mutate_at(vars(-numerousuario, -CESD), normalize)
+
+# Normalizar CESD entre 0 y 1 (aunque después se puede desnormalizar para interpretar)
+datos_norm <- datos_norm %>%
+  mutate(CESD = normalize(CESD))
+
+# Explorar los datos
+head(datos_norm)
+summary(datos_norm)
+```
+```{r}
+# Dividir los datos en entrenamiento y prueba (80% entrenamiento, 20% prueba)
+set.seed(123) # Para reproducibilidad
+indices <- createDataPartition(datos_norm$CESD, p = 0.8, list = FALSE)
+entrenamiento <- datos_norm[indices, ]
+prueba <- datos_norm[-indices, ]
+
+# Definir la fórmula del modelo
+# Predecir CESD en función de todas las otras variables
+formula_nn <- CESD ~ Fitness + Moda + Viajes + Cocina + Belleza + DecoracionHogar + Tecnologia + Familia + Arte + Motivacion
+
+# Entrenar la red neuronal
+# Vamos a usar una arquitectura simple con una capa oculta de 5 neuronas
+# Puedes ajustar 'hidden' para experimentar con diferentes arquitecturas
+# linear.output = FALSE lo usaremos para que la última capa de la red neuronal tenga la función sigmoide, de forma que los datos de salida estén comprendidos entre 0 y 1, como los de entrada,
+# si queremos que no sea así y poder obtener datos de salida por encima de 1 o por debajo de 0 (como en este caso), debemos de usar el argumento linear.output=TRUE.
+# Vamos a usar este argumento para tener mayor flexibilidad en la predicción de salida y compararlo con los datos desnormalizados de CES-D
+modelo_nn <- neuralnet(formula_nn, data = entrenamiento, hidden = c(5), linear.output = TRUE, stepmax=1e6)
+
+# Visualizar la red neuronal 
+plot(modelo_nn)
+```
+
+```{r}
+# Hacer predicciones sobre el conjunto de prueba
+# Usamos predict en lugar de compute
+predicciones <- predict(modelo_nn, prueba[, -which(names(prueba) %in% c("numerousuario", "CESD"))])
+
+# Extraer los valores predichos (ya es una matriz, no una lista)
+predicciones_valor <- predicciones
+
+# Desnormalizar las predicciones y los valores reales de CESD para interpretar los resultados
+# Obtenemos los valores mínimo y máximo de la variable CESD sin normalizar
+min_CESD <- min(datos$CESD)
+max_CESD <- max(datos$CESD)
+# Desnormalizamos los valores predichos
+predicciones_desnormalizadas <- predicciones_valor * (max_CESD - min_CESD) + min_CESD
+# Desnormalizamos los valores reales
+prueba_desnormalizada <- prueba$CESD * (max_CESD - min_CESD) + min_CESD
+
+# Calcular el error cuadrático medio (RMSE)
+rmse <- sqrt(mean((prueba_desnormalizada - predicciones_desnormalizadas)^2))
+print(paste("RMSE:", rmse))
+
+# Calcular el R cuadrado
+r2 <- 1 - (sum((prueba_desnormalizada - predicciones_desnormalizadas)^2) / sum((prueba_desnormalizada - mean(prueba_desnormalizada))^2))
+print(paste("R-cuadrado:", r2))
+
+# Crear un dataframe para comparar valores reales y predichos desnormalizados
+comparacion <- data.frame(Real = prueba_desnormalizada, Predicho = predicciones_desnormalizadas)
+
+# Gráfico de dispersión de valores reales vs predichos desnormalizados
+ggplot(comparacion, aes(x = Real, y = Predicho)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(title = "Valores Reales vs. Predichos (CESD Desnormalizado)",
+       x = "Valor Real",
+       y = "Valor Predicho") +
+  theme_minimal()
+```
+```{r}
+# 5. Intentando forzar mayor correlación entre Belleza, Moda y CES-D (Opcional y Experimental):
+
+# Identificar los registros donde Belleza y Moda son altos
+registros_belleza_moda_altos <- entrenamiento %>%
+  filter(Belleza > 0.6 & Moda > 0.6) # Ajusta el umbral según tus datos
+
+# Para esos registros, aumentar artificialmente el valor de CESD (experimental)
+registros_belleza_moda_altos_modificados <- registros_belleza_moda_altos %>%
+  mutate(CESD = ifelse(CESD < 0.8, CESD + 0.1, 1)) # Aumenta CESD en 0.1, máximo 1
+
+# Combinar los datos modificados con el conjunto de entrenamiento original
+entrenamiento_modificado <- rbind(entrenamiento, registros_belleza_moda_altos_modificados)
+
+# Entrenar un nuevo modelo con los datos modificados
+modelo_nn_modificado <- neuralnet(formula_nn, data = entrenamiento_modificado, hidden = 5, linear.output = TRUE, stepmax=1e6)
+
+# Evaluar el nuevo modelo modificado:
+
+# Hacer predicciones sobre el conjunto de prueba con el modelo modificado
+predicciones_mod <- predict(modelo_nn_modificado, prueba[, -which(names(prueba) %in% c("numerousuario", "CESD"))])
+
+# Extraer los valores predichos
+predicciones_valor_mod <- predicciones_mod
+
+# Desnormalizar las predicciones del modelo modificado
+predicciones_desnormalizadas_mod <- predicciones_valor_mod * (max_CESD - min_CESD) + min_CESD
+
+# Calcular el error cuadrático medio (RMSE) del modelo modificado
+rmse_mod <- sqrt(mean((prueba_desnormalizada - predicciones_desnormalizadas_mod)^2))
+print(paste("RMSE (Modelo Modificado):", rmse_mod))
+
+# Calcular el R cuadrado del modelo modificado
+r2_mod <- 1 - (sum((prueba_desnormalizada - predicciones_desnormalizadas_mod)^2) / sum((prueba_desnormalizada - mean(prueba_desnormalizada))^2))
+print(paste("R-cuadrado (Modelo Modificado):", r2_mod))
+
+# Crear un dataframe para comparar valores reales y predichos del modelo modificado
+comparacion_mod <- data.frame(Real = prueba_desnormalizada, Predicho = predicciones_desnormalizadas_mod)
+
+# Gráfico de dispersión de valores reales vs predichos del modelo modificado
+ggplot(comparacion_mod, aes(x = Real, y = Predicho)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(title = "Valores Reales vs. Predichos (Modelo Modificado - CESD Desnormalizado)",
+       x = "Valor Real",
+       y = "Valor Predicho") +
+  theme_minimal()
+
+# Comparar RMSE y R-cuadrado de ambos modelos
+print(paste("RMSE (Modelo Original):", rmse))
+print(paste("RMSE (Modelo Modificado):", rmse_mod))
+print(paste("R-cuadrado (Modelo Original):", r2))
+print(paste("R-cuadrado (Modelo Modificado):", r2_mod))
+
+# (Opcional) Visualizar la correlación entre Belleza, Moda y CES-D en el conjunto de prueba
+cor_prueba <- cor(prueba[, c("Belleza", "Moda", "CESD")])
+print("Correlación en el conjunto de prueba (Original):")
+print(cor_prueba)
+# Como no podemos cambiar la correlación de los datos de prueba, esta correlación no va a cambiar
+# Podemos obtener como se relacionan las variables del modelo modificado a partir de las predicciones:
+# Calcular la correlación en las predicciones del modelo modificado
+cor_predicciones_mod <- cor(data.frame(Belleza = prueba$Belleza, Moda = prueba$Moda, CESD = predicciones_desnormalizadas_mod))
+print("Correlación en las predicciones del modelo modificado:")
+print(cor_predicciones_mod)
+```
+```{r}
+# --- Carga de Paquetes ---
+library(neuralnet)
+library(caret)
+library(dplyr)
+library(ggplot2)
+
+# --- Carga y Preprocesamiento de Datos ---
+#setwd("C:/Users/jmosc/Downloads") # ¡AJUSTA A TU RUTA!
+datos <- read.csv("datos_sinteticos.csv")
+datos <- datos %>% mutate(numerousuario = row_number())
+datos <- datos %>% select(numerousuario, everything())
+
+# --- Normalización CORRECTA ---
+min_max_values <- datos %>%
+  select(-numerousuario, -CESD) %>%
+  summarise_all(list(min = min, max = max))
+
+min_CESD <- min(datos$CESD)
+max_CESD <- max(datos$CESD)
+
+normalize <- function(x, min_val, max_val) {
+  return ((x - min_val) / (max_val - min_val))
+}
+
+datos_norm <- datos %>%
+  mutate(across(c(-numerousuario, -CESD), ~ normalize(., min_max_values[[paste0(cur_column(), "_min")]], min_max_values[[paste0(cur_column(), "_max")]]))) %>%
+  mutate(CESD = normalize(CESD, min_CESD, max_CESD))
+
+# --- División de Datos ---
+set.seed(123)
+indices <- createDataPartition(datos_norm$CESD, p = 0.8, list = FALSE)
+entrenamiento <- datos_norm[indices, ]
+prueba <- datos_norm[-indices, ]
+
+# --- Modelado con Redes Neuronales ---
+formula_nn <- CESD ~ Fitness + Moda + Viajes + Cocina + Belleza + DecoracionHogar + Tecnologia + Familia + Arte + Motivacion
+
+# Lista de arquitecturas a probar (incluyendo la de 5 neuronas para la comparación)
+arquitecturas <- list(c(5), c(10), c(10, 5), c(12, 8, 4))
+resultados <- data.frame()
+
+```
+este posible for puede ejecutar las opciones de arquitectura pero
+para no perder el estado de procesamiento en cada modelo, se separan 
+en bloques el mismo codigo y poder observar el avance:
+```{r}
+#for (arquitectura in arquitecturas) {
+#  set.seed(456) # Semilla para cada arquitectura
+#  modelo_nn <- neuralnet(formula_nn, data = entrenamiento, hidden = arquitectura, linear.output = TRUE, stepmax=1e6)
+#  
+#  predicciones <- predict(modelo_nn, prueba[, -which(names(prueba) %in% c("numerousuario", "CESD"))])
+#  predicciones_desnormalizadas <- predicciones * (max_CESD - min_CESD) + min_CESD
+#  prueba_desnormalizada <- (prueba$CESD * (max_CESD - min_CESD)) + min_CESD
+#  
+#  rmse <- sqrt(mean((prueba_desnormalizada - predicciones_desnormalizadas)^2))
+#  r2 <- 1 - (sum((prueba_desnormalizada - predicciones_desnormalizadas)^2) / sum((prueba_desnormalizada - mean(prueba_desnormalizada))^2))
+#  
+#  resultados <- rbind(resultados, data.frame(Arquitectura = paste(arquitectura, collapse = "-"), RMSE = rmse, R2 = r2))
+#
+#  # Gráfico de dispersión (opcional)
+#    comparacion <- data.frame(Real = prueba_desnormalizada, Predicho = predicciones_desnormalizadas)
+#    print(ggplot(comparacion, aes(x = Real, y = Predicho)) +
+#      geom_point() +
+#      geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+#      labs(title = paste("Valores Reales vs. Predichos (CESD Desnormalizado - Arquitectura:", paste(arquitectura, collapse = "-"), ")"),
+#           x = "Valor Real",
+#           y = "Valor Predicho") +
+#      theme_minimal())
+#}
+```
+
+## arquitectura 1 capa oculta de 5 neuronas
+```{r}
+arquitectura = c(5)
+set.seed(456) # Semilla para cada arquitectura
+modelo_nn <- neuralnet(formula_nn, data = entrenamiento, hidden = arquitectura, linear.output = TRUE, stepmax=1e6)
+
+predicciones <- predict(modelo_nn, prueba[, -which(names(prueba) %in% c("numerousuario", "CESD"))])
+predicciones_desnormalizadas <- predicciones * (max_CESD - min_CESD) + min_CESD
+prueba_desnormalizada <- (prueba$CESD * (max_CESD - min_CESD)) + min_CESD
+
+rmse <- sqrt(mean((prueba_desnormalizada - predicciones_desnormalizadas)^2))
+r2 <- 1 - (sum((prueba_desnormalizada - predicciones_desnormalizadas)^2) / sum((prueba_desnormalizada - mean(prueba_desnormalizada))^2))
+
+resultados <- rbind(resultados, data.frame(Arquitectura = paste(arquitectura, collapse = "-"), RMSE = rmse, R2 = r2))
+
+# Gráfico de dispersión (opcional)
+comparacion <- data.frame(Real = prueba_desnormalizada, Predicho = predicciones_desnormalizadas)
+print(ggplot(comparacion, aes(x = Real, y = Predicho)) +
+geom_point() +
+geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+labs(title = paste("Valores Reales vs. Predichos (CESD Desnormalizado - Arquitectura:", paste(arquitectura, collapse = "-"), ")"),
+     x = "Valor Real",
+     y = "Valor Predicho") +
+theme_minimal())
+```
+
+## arquitectura 1 capa oculta de 10 neuronas
+```{r}
+arquitectura = c(10)
+set.seed(456) # Semilla para cada arquitectura
+modelo_nn <- neuralnet(formula_nn, data = entrenamiento, hidden = arquitectura, linear.output = TRUE, stepmax=1e6)
+
+predicciones <- predict(modelo_nn, prueba[, -which(names(prueba) %in% c("numerousuario", "CESD"))])
+predicciones_desnormalizadas <- predicciones * (max_CESD - min_CESD) + min_CESD
+prueba_desnormalizada <- (prueba$CESD * (max_CESD - min_CESD)) + min_CESD
+
+rmse <- sqrt(mean((prueba_desnormalizada - predicciones_desnormalizadas)^2))
+r2 <- 1 - (sum((prueba_desnormalizada - predicciones_desnormalizadas)^2) / sum((prueba_desnormalizada - mean(prueba_desnormalizada))^2))
+
+resultados <- rbind(resultados, data.frame(Arquitectura = paste(arquitectura, collapse = "-"), RMSE = rmse, R2 = r2))
+
+# Gráfico de dispersión (opcional)
+comparacion <- data.frame(Real = prueba_desnormalizada, Predicho = predicciones_desnormalizadas)
+print(ggplot(comparacion, aes(x = Real, y = Predicho)) +
+geom_point() +
+geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+labs(title = paste("Valores Reales vs. Predichos (CESD Desnormalizado - Arquitectura:", paste(arquitectura, collapse = "-"), ")"),
+     x = "Valor Real",
+     y = "Valor Predicho") +
+theme_minimal())
+```
+
+## arquitectura 2 capas ocultas de 10 y 5 neuronas 
+```{r}
+arquitectura = c(10, 5)
+set.seed(456) # Semilla para cada arquitectura
+modelo_nn <- neuralnet(formula_nn, data = entrenamiento, hidden = arquitectura, linear.output = TRUE, stepmax=1e6)
+
+predicciones <- predict(modelo_nn, prueba[, -which(names(prueba) %in% c("numerousuario", "CESD"))])
+predicciones_desnormalizadas <- predicciones * (max_CESD - min_CESD) + min_CESD
+prueba_desnormalizada <- (prueba$CESD * (max_CESD - min_CESD)) + min_CESD
+
+rmse <- sqrt(mean((prueba_desnormalizada - predicciones_desnormalizadas)^2))
+r2 <- 1 - (sum((prueba_desnormalizada - predicciones_desnormalizadas)^2) / sum((prueba_desnormalizada - mean(prueba_desnormalizada))^2))
+
+resultados <- rbind(resultados, data.frame(Arquitectura = paste(arquitectura, collapse = "-"), RMSE = rmse, R2 = r2))
+
+# Gráfico de dispersión (opcional)
+comparacion <- data.frame(Real = prueba_desnormalizada, Predicho = predicciones_desnormalizadas)
+print(ggplot(comparacion, aes(x = Real, y = Predicho)) +
+geom_point() +
+geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+labs(title = paste("Valores Reales vs. Predichos (CESD Desnormalizado - Arquitectura:", paste(arquitectura, collapse = "-"), ")"),
+     x = "Valor Real",
+     y = "Valor Predicho") +
+theme_minimal())
+```
+
+## arquitectura 3 capas ocultas de 12, 8 y 4 neuronas
+```{r}
+arquitectura = c(12, 8, 4)
+set.seed(456) # Semilla para cada arquitectura
+modelo_nn <- neuralnet(formula_nn, data = entrenamiento, hidden = arquitectura, linear.output = TRUE, stepmax=1e6)
+
+predicciones <- predict(modelo_nn, prueba[, -which(names(prueba) %in% c("numerousuario", "CESD"))])
+predicciones_desnormalizadas <- predicciones * (max_CESD - min_CESD) + min_CESD
+prueba_desnormalizada <- (prueba$CESD * (max_CESD - min_CESD)) + min_CESD
+
+rmse <- sqrt(mean((prueba_desnormalizada - predicciones_desnormalizadas)^2))
+r2 <- 1 - (sum((prueba_desnormalizada - predicciones_desnormalizadas)^2) / sum((prueba_desnormalizada - mean(prueba_desnormalizada))^2))
+
+resultados <- rbind(resultados, data.frame(Arquitectura = paste(arquitectura, collapse = "-"), RMSE = rmse, R2 = r2))
+
+# Gráfico de dispersión (opcional)
+comparacion <- data.frame(Real = prueba_desnormalizada, Predicho = predicciones_desnormalizadas)
+print(ggplot(comparacion, aes(x = Real, y = Predicho)) +
+geom_point() +
+geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+labs(title = paste("Valores Reales vs. Predichos (CESD Desnormalizado - Arquitectura:", paste(arquitectura, collapse = "-"), ")"),
+     x = "Valor Real",
+     y = "Valor Predicho") +
+theme_minimal())
+```
+## Comparación de Resultados
+```{r}
+# --- Comparación de Resultados ---
+print("Resultados de las diferentes arquitecturas:")
+print(resultados)
+
+# --- Seleccionar la mejor arquitectura ---
+mejor_arquitectura <- resultados %>% arrange(RMSE) %>% slice(1)
+print("Mejor Arquitectura según RMSE:")
+print(mejor_arquitectura)
+
+# --- Entrenar el modelo final con la mejor arquitectura ---
+set.seed(456) #Mantener la semilla para resultados consistentes
+modelo_nn_final <- neuralnet(formula_nn, data = entrenamiento, hidden = as.numeric(strsplit(mejor_arquitectura$Arquitectura, "-")[[1]]), linear.output = TRUE, stepmax=1e6)
+
+# --- Forzar Correlación (REVISAR ESTE ENFOQUE) ---
+# ... (Código para modificar datos, pero con precaución y justificación teórica)
+
+# --- Correlaciones ---
+# ... (Código para calcular y mostrar correlaciones)
+
+# --- Comparación con la Arquitectura de 5 Neuronas ---
+resultados_5_neuronas <- resultados %>% filter(Arquitectura == "5")
+print("Resultados con 5 neuronas:")
+print(resultados_5_neuronas)
+
+# --- Comparación directa en la consola ---
+cat("\nComparación directa:\n")
+cat(paste("Arquitectura:", resultados$Arquitectura, "\n"))
+cat(paste("RMSE:", resultados$RMSE, "\n"))
+cat(paste("R2:", resultados$R2, "\n"))
+
+cat("\nResultados con 5 neuronas:\n")
+cat(paste("RMSE:", resultados_5_neuronas$RMSE, "\n"))
+cat(paste("R2:", resultados_5_neuronas$R2, "\n"))
+
+# --- Tabla comparativa (para el informe) ---
+library(knitr) # Para formatear tablas en R Markdown
+
+tabla_comparativa <- resultados %>%
+  mutate(Arquitectura = ifelse(Arquitectura == "5", "5 Neuronas (Original)", Arquitectura)) %>% #Renombrar para mayor claridad
+  kable(caption = "Comparación de Resultados entre Arquitecturas",
+        col.names = c("Arquitectura", "RMSE", "R²"),
+        digits = 4) # 4 decimales
+
+print(tabla_comparativa)
+```
+
