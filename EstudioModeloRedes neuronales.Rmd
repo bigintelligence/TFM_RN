@@ -1,17 +1,33 @@
 ---
 title: "Estudio Modelo Redes Neuronales"
-author: "Juan Moscardó Durá"
+author: "Juan Moscardó Durá, Pablo Clemente, Christian Dujak, John Cabrera"
 date: "2024-12-29"
 output:
-  html_document: default
-  word_document: default
   pdf_document: default
+  word_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+TFM Proyecto de viabilidad de un modelo predictivo de la escala de depresión CES-D en base al tipo de contenido visualizado en las redes sociales
 
+Los integrantes del grupo somos:
+
+- Pablo Clemente
+- Juan Moscardo
+- Christian Dujak
+- John Fredy Cabrera Arciniegas
+
+## Requerimientos
+
+- RStudio
+- R version 4.3.3 o superior
+
+## Ejecutar
+
+- recomendado ejecutar fichero Rmd con RStudio.
 ```{r}
 # Cargar paquetes
 library(neuralnet)
